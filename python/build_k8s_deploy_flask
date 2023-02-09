@@ -1,0 +1,103 @@
+import boto3
+import time
+
+def create_eks_cluster(eks_client, cluster_name, vpc_id, subnets):
+    response = eks_client.create_cluster(
+        name=cluster_name,
+        roleArn='arn:aws:iam::<ACCOUNT_ID>:role/eksServiceRole',
+        resourcesVpcConfig={
+            'subnetIds': subnets,
+            'securityGroupIds': [
+                '<SECURITY_GROUP_ID>',
+            ],
+        },
+        version='1.18'
+    )
+
+    cluster = response['cluster']
+    print(f'EKS cluster {cluster_name} is being created.')
+
+    while True:
+        describe_response = eks_client.describe_cluster(name=cluster_name)
+        status = describe_response['cluster']['status']
+        if status == 'ACTIVE':
+            print(f'EKS cluster {cluster_name} has been created successfully.')
+            break
+        if status == 'FAILED':
+            print(f'EKS cluster {cluster_name} creation has failed.')
+            break
+        time.sleep(30)
+
+    return cluster
+
+def create_auto_scaling_group(asg_client, cluster_name, vpc_id):
+    response = asg_client.create_auto_scaling_group(
+        AutoScalingGroupName=cluster_name,
+        LaunchTemplate={
+            'LaunchTemplateId': '<LAUNCH_TEMPLATE_ID>',
+            'Version': '1'
+        },
+        MinSize=4,
+        MaxSize=8,
+        DesiredCapacity=4,
+        VPCZoneIdentifier=vpc_id
+    )
+
+    print(f'Auto Scaling Group for EKS cluster {cluster_name} has been created.')
+
+def deploy_flask_app(k8s_client, cluster_name):
+    deployment_manifest = """
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: flask-app-deployment
+    spec:
+      replicas: 4
+      selector:
+        matchLabels:
+          app: flask-app
+      template:
+        metadata:
+          labels:
+            app: flask-app
+        spec:
+          containers:
+          - name: flask-app
+            image: <FLASK_APP_IMAGE_URL>
+            ports:
+            - containerPort: 5000
+    """
+
+    k8s_client.create_object(clusterName=cluster_name, objectType='deployment', object=deployment_manifest)
+    print('Flask app deployment has been created.')
+
+    service_manifest = """
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: flask-app-service
+    spec:
+      selector:
+        app: flask-app
+      ports:
+      - name: http
+        port: 5000
+        targetPort: 5000
+      type: LoadBalancer
+    """
+
+k8s_client.create_object(clusterName=cluster_name, objectType='service', object=service_manifest)
+    print('Flask app service has been created.')
+
+if __name__ == '__main__':
+    eks_client = boto3.client('eks')
+    asg_client = boto3.client('autoscaling')
+    k8s_client = boto3.client('eks')
+
+    cluster_name = 'my-eks-cluster'
+    vpc_id = '<VPC_ID>'
+    subnets = ['<SUBNET_1>', '<SUBNET_2>', '<SUBNET_3>']
+
+    eks_cluster = create_eks_cluster(eks_client, cluster_name, vpc_id, subnets)
+    create_auto_scaling_group(asg_client, cluster_name, vpc_id)
+    deploy_flask_app(k8s_client, cluster_name)
